@@ -1,10 +1,15 @@
 import { EventEmitter } from 'events'
-import { authenticate, ClientNotFoundError, Credentials } from './authentication'
+import {
+  authenticate,
+  ClientNotFoundError,
+  Credentials
+} from './authentication'
 
 const DEFAULT_POLL_INTERVAL = 2500
 
 export declare interface LeagueClient {
   on(event: 'connect', callback: (credentials: Credentials) => void): this
+
   on(event: 'disconnect', callback: () => void): this
 }
 
@@ -19,7 +24,7 @@ export interface LeagueClientOptions {
 }
 
 export class LeagueClient extends EventEmitter {
-  private isListening: boolean = false
+  private intervalHandle: NodeJS.Timeout | undefined = undefined
   public credentials?: Credentials = undefined
 
   constructor(credentials: Credentials, public options?: LeagueClientOptions) {
@@ -31,57 +36,42 @@ export class LeagueClient extends EventEmitter {
    * Start listening for League Client processes
    */
   start() {
-    // Only trigger if it's not already
-    // running
-    if (!this.isListening) {
-      this.isListening = true
-
-      if (this.credentials === undefined || !processExists(this.credentials.pid)) {
-        // Invalidated credentials or no LeagueClientUx process, fail
-        throw new ClientNotFoundError()
-      }
-
-      this.onTick()
+    if (this.credentials === undefined || !processExists(this.credentials.pid)) {
+      // Invalidated credentials or no LeagueClientUx process, fail
+      throw new ClientNotFoundError()
     }
+    this.intervalHandle = setInterval(() => {
+      this.onTick()
+    }, this.options?.pollInterval ?? DEFAULT_POLL_INTERVAL)
   }
 
   /**
    * Stop listening for client stop/start
    */
   stop() {
-    this.isListening = false
+    if (this.intervalHandle !== undefined) {
+      clearInterval(this.intervalHandle)
+    }
   }
 
   private async onTick() {
-    if (this.isListening) {
-      if (this.credentials !== undefined) {
-        // Current credentials are valid
-        if (!processExists(this.credentials.pid)) {
-          // No such process, emit disconnect and
-          // invalidate credentials
-          this.emit('disconnect')
-          this.credentials = undefined
-          // Re-queue onTick to listen for credentials
-          this.onTick()
-        } else {
-          // Process still lives, queue onTick
-          setTimeout(() => {
-            this.onTick()
-          }, this.options?.pollInterval ?? DEFAULT_POLL_INTERVAL)
-        }
-      } else {
-        // Current credentials were invalidated, wait for
-        // client to come back up
-        const credentials = await authenticate({
-          awaitConnection: true,
-          pollInterval: this.options?.pollInterval ?? DEFAULT_POLL_INTERVAL
-        })
-        this.credentials = credentials
-        this.emit('connect', credentials)
-        setTimeout(() => {
-          this.onTick()
-        }, this.options?.pollInterval ?? DEFAULT_POLL_INTERVAL)
+    if (this.credentials !== undefined) {
+      // Current credentials are valid
+      if (!processExists(this.credentials.pid)) {
+        // No such process, emit disconnect and
+        // invalidate credentials
+        this.emit('disconnect')
+        this.credentials = undefined
       }
+    } else {
+      // Current credentials were invalidated, wait for
+      // client to come back up
+      const credentials = await authenticate({
+        awaitConnection: true,
+        pollInterval: this.options?.pollInterval ?? DEFAULT_POLL_INTERVAL
+      })
+      this.credentials = credentials
+      this.emit('connect', credentials)
     }
   }
 }
